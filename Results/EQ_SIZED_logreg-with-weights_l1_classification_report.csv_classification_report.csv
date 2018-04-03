@@ -1,0 +1,7 @@
+class,f1_score,precision,recall,support
+walking,0.56,0.66,0.49,7329.0
+walking_upstairs,0.49,0.45,0.54,3866.0
+walking_downstairs,0.58,0.53,0.65,3590.0
+sitting,0.73,0.7,0.75,19821.0
+standing,0.75,0.71,0.79,9630.0
+laying,0.66,0.74,0.59,10218.0
