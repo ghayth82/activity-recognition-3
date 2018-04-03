@@ -1,0 +1,10 @@
+*.DS_Store
+*.DS_Store?
+*.csv
+*.xlsx
+*.png
+*-checkpoint.ipynb
+*.pyc
+*.pdf
+*.jpeg
+
