@@ -1,26 +1,39 @@
-
+import pickle
 from sklearn.linear_model import LogisticRegression
 from sklearn.feature_selection import RFE
 from sklearn import metrics
 from sklearn.metrics import confusion_matrix
 import itertools
 import pandas as pd
-import matplotlib.pyplot as plt
 import numpy as np
 import os
-import seaborn as sns
 import datetime
+from datetime import datetime
+from datetime import timedelta
+from datetime import date
+
 import scipy 
 from scipy import optimize
 import scipy.signal as signal 
-from detect_peaks import *
-import quaternion as quat
+import sys
+import matplotlib.pyplot as plt
+    
+sys.path.append('../dsmuc/')
+from dsmuc.custom import detect_peaks
+import dsmuc.io as io
+import dsmuc.preprocessing as pp
+import dsmuc.features as ff
+import dsmuc.custom as cs
 
 
+import pytz
+from azure.storage.blob import BlockBlobService
+from io import StringIO
+from azure.storage.blob import AppendBlobService
 from azure.storage.blob import BlockBlobService
 import requests
 import json
-download_dir =  "G9_data/Downloaded"
+
 label_dict = {1:'walking',
              2:'walking upstairs',
              3:'walking downstairs',
@@ -30,244 +43,86 @@ label_dict = {1:'walking',
              7:'unknown'}
 
 
-# In[2]:
+download_dir =  "../../data/G9_data/Downloaded"
+account_name='watchstorage'
+account_key='TJWcjsCs4aK9Xorw4DIAZGvKz0AFb2kvgSh49t+3nADR2usZ1ED14GLBQ/klJsSSrKykxu0ghCXn46+0bv2J8Q=='
+container_name_ = 'jnj'
 
+# Model saved
+filename = './modelbuilding/finalized_model.sav'
+logreg = pickle.load(open(filename, 'rb'), encoding = 'iso-8859-1')
 
-# Trained Model
-df_model = pd.read_csv("modelbuilding/data/preprocessed/data.csv", index_col=0)
-df_model.dropna(axis=0, how='any', inplace=True)
-
+def time_to_str(t):
+    t_woM = t.replace(microsecond=0)
+    dt64 = np.datetime64(t_woM)
+    a = dt64.astype('datetime64[s]')
+    
+    return np.datetime_as_string(a)+"Z"
+def f(x):
+    u, c = np.unique(x['predictions'].values, return_counts=True)
+    outcome = u[np.argmax(c)]
+    return outcome
 
 
 # In[4]:
 
 def do_recognition():
 
-    X_training = df_model[df_model.columns[:-2]].values
-    y_training = df_model['label'].values
+        ##################
+    #### READ DATA ###
+    ##################
+    day_now=0
+    day_before=1
+
+    account_name='watchstorage'
+    account_key='TJWcjsCs4aK9Xorw4DIAZGvKz0AFb2kvgSh49t+3nADR2usZ1ED14GLBQ/klJsSSrKykxu0ghCXn46+0bv2J8Q=='
+    container_name_ = 'jnj'
+
+    blob_service = BlockBlobService(account_name=account_name, account_key = account_key)
 
 
-    # In[5]:
-
-
-    logreg = LogisticRegression(penalty = 'l1')
-    logreg.fit(X_training, y_training)
-
-
-    # In[6]:
-
-
-    interested_cols = [ 'AccX', 'AccY', 'AccZ', 'GyroX','GyroY', 'GyroZ']
-    def create_datetime_index(df):
-        # convert unix time to german time and then to date
-        df['date'] = pd.to_datetime(df['system_time'],unit='ms')
-        # set datetime index
-        df.index = pd.DatetimeIndex(df["date"])
-        df = df.drop(labels=["date"],  axis=1)
-        return df
-    def read_file(path):
-        df = pd.read_csv(path)
-        return df
-    def get_sensor_data(df):
-
-        df = create_datetime_index(df)
-        df.sort_index(ascending = True, inplace = True)
-
-        # Sensor Selection
-        df_acc = df[df['sensor_name']=='Accelerometer']
-        df_gyro = df[df['sensor_name']=='Gyroscope']
-
-        # Merge accelerometer and gyroscope dataframes
-        df_merged = pd.merge(df_acc, df_gyro, left_index=True, right_index= True, how='inner')
-        df_merged.drop([
-         'sensor_name_x',
-         'value_x',
-         'id_y',
-         'sensor_name_y',
-         'system_time_y',
-         'value_y'], axis = 1, inplace = True)
-
-        # Drop duplicates
-        df_merged = df_merged.loc[::2] # run ony once
-
-        # new column names
-        df_merged.columns = ['id','system_time', 'AccX', 'AccY', 'AccZ', 'GyroX', 'GyroY', 'GyroZ']
-        df_merged.sort_index(ascending = True, inplace=True)
-        return df_merged
-    def find_nearest(array,value):
-        idx = (np.abs(array-value)).argmin()
-        return idx
-    def extract_energy_variables(f, psdX):
-
-        i_low = find_nearest(f,4.0)
-        i_high = find_nearest(f,7.0)
-
-        energy_total = np.sum(psdX) 
-        energy_interested = np.sum(psdX[i_low : i_high + 1]) 
-        max_total = np.max(psdX)
-        max_interested = np.max(psdX[i_low : i_high + 1])
-        return energy_total,energy_interested, max_total, max_interested
-    def average_over_axis(df):
-        aoa = df[interested_cols].mean(axis = 0)
-        aoa.index += '_aoa'
-        return aoa
-    def average_time_elapse(df):
-        list_= []
-        for col in interested_cols:
-            a = df[col].values
-            mph = a.mean()
-            ind = detect_peaks(a, mph = mph, mpd=10, show=False)
-            list_.append(np.diff(ind).mean())
-        ate = pd.Series(list_, index=interested_cols)
-        ate.index += '_ate'
-        ate[pd.isnull(ate)]=0 #### TODO
-        return ate
-    def average_peak_freq(df):
-        list_f= []
-        for col in interested_cols:
-            a = df[col].values
-            mph = a.mean()
-            ind = detect_peaks(a, mph = mph, mpd=10, show=False)
-            list_f.append(len(ind)/a.shape[0])
-        apf = pd.Series(list_f, index=interested_cols)
-        apf.index += '_apf'
-        return apf
-    def rms_func(df):
-        list_= []
-        for col in interested_cols:
-            a = df[col].values
-            rms_temp = np.sqrt(np.mean(a**2))
-            list_.append(rms_temp)
-        rms = pd.Series(list_, index=interested_cols)
-        rms.index += '_rms'
-        return rms
-    def std_func(df):
-        list_= []
-        for col in interested_cols:
-            a = df[col].values
-            std_temp = np.std(a)
-            list_.append(std_temp)
-        std = pd.Series(list_, index=interested_cols)
-        std.index += '_std'
-        return std
-    def minmax_func(df):
-        list_= []
-        for col in interested_cols:
-            a = df[col].values
-            minmax_temp = np.max(a)-np.min(a)
-            list_.append(minmax_temp)
-        minmax = pd.Series(list_, index=interested_cols)
-        minmax.index += '_minmax'
-        return minmax
-    def cor_func(df):
-        a = df[interested_cols[:3]].corr()
-        b= df[interested_cols[3:]].corr()
-        indexes = ['CorAccXAccY','CorAccXAccZ','CorAccYAccZ', 'CorGyroXGyroY','CorGyroXGyroZ','CorGyroYGyroZ']
-        Cor = (a['AccX'][1:]).append(a['AccY'][2:]).append((b['GyroX'][1:]).append(b['GyroY'][2:]))
-        Cor[pd.isnull(Cor)]=0 ### TODO
-        corr = pd.Series(Cor.values, indexes)
-        corr.index += '_corr'
-        return corr
-    def get_all_features(df, file):
-
-        aoa = average_over_axis(df)
-        ate = average_time_elapse(df)
-        apf = average_peak_freq(df)
-        rms = rms_func(df)
-        std = std_func(df)
-        minmax = minmax_func(df)
-        cor = cor_func(df)
-        ser_list = [aoa, ate,apf, rms,std, minmax, cor]
-        ser = pd.concat(ser_list)
-        ser.name = file
-        return ser
-
-
-
-
-    # In[7]:
-
-
-    def time_to_str(t):
-        t_woM = t.replace(microsecond=0)
-
-        dt64 = np.datetime64(t_woM)
-        dt64
-
-        a = dt64.astype('datetime64[s]')
-
-        return np.datetime_as_string(a)+"Z"
-
-
-    # In[9]:
-
-
-    block_blob_service = BlockBlobService(account_name='watchstorage', account_key='TJWcjsCs4aK9Xorw4DIAZGvKz0AFb2kvgSh49t+3nADR2usZ1ED14GLBQ/klJsSSrKykxu0ghCXn46+0bv2J8Q==')
-
-    container_name = 'jnj'
-    generator = block_blob_service.list_blobs(container_name)
-
-    # Download each day movement data 
+    blobs = [];blob_date = []
+    generator = blob_service.list_blobs(container_name_)
     for blob in generator:
-        print("\t Blob name: " + blob.name)
-        if not os.path.exists(os.path.join(download_dir, blob.name)) : # check filecmp.cmp()
-            if not os.path.exists(os.path.join(download_dir, blob.name.split('/')[0])):
-                os.mkdir(os.path.join(download_dir, blob.name.split('/')[0]))
-            print("downloading...")
-            block_blob_service.get_blob_to_path(container_name, blob.name,os.path.join(download_dir, blob.name ))
-            print("downloaded")
-        else:
-            print("Already downloaded ")
+        blobs.append(blob.name)
+        blob_date.append(blob.name[:10])
+    blob_table = pd.DataFrame()
+    blob_table['date'] = blob_date
+    blob_table['blobname'] = blobs    
 
-
-    # In[10]:
-
-
-    from datetime import date, timedelta
-    yesterday = date.today() - timedelta(1)
-    yesterday = yesterday.strftime('%Y-%m-%d')
     today = date.today().strftime('%Y-%m-%d')
-    dates_to_consider = [(date.today() - timedelta(i)).strftime('%Y-%m-%d') for i in range(0,6)]
-    print(yesterday)
-    print(today)
+    yesterday = (date.today() - timedelta(1)).strftime('%Y-%m-%d')
+    blob_table = blob_table[(blob_table['date']==yesterday)|(blob_table['date']==today)] 
+
+    
+    if blob_table.shape[0]>0:
+        blob_df = pd.DataFrame()
+        for blobname in blob_table['blobname']:
+            blob_Class = blob_service.get_blob_to_text(container_name=container_name_, blob_name = blobname)
+            blob_String =blob_Class.content
+            blob_df1 = pd.read_csv(StringIO(blob_String),low_memory=False)
+            blob_df = blob_df.append(blob_df1)        
 
 
-    # In[11]:
+        print("READ DATA FRAMES SIZE :",blob_df.shape[0])
+
+    del blob_df1
 
 
-    df_list = []
-    for day in dates_to_consider:
-        path = os.path.join(download_dir, day)
-        if os.path.exists(path):
-            for root,dirs,files in os.walk(path):
-                if files[0].endswith(".csv"):
-                    file_path = path+'/'+files[0]
-                    df_list.append(pd.read_csv(file_path))
-    df = pd.concat(df_list)
+    #################
+    #################
+    
+    feature_list =  ['aoa','ate','apf','rms','std','minimax','cor','mean','min','max']
+    preserved_features=['start']
 
 
-    # In[12]:
-
-
-    df.head()
-
-
-    # In[13]:
-
-
-    df['id'].unique()
-
-
-    # In[ ]:
-
-
-    for watch_id in df['id'].unique():
-        #TODO: Select all watches and do the predictions
+    for watch_id in blob_df['id'].unique()[::-1]:
         print("Watch ", watch_id," is being processed" )
-        df_temp = get_sensor_data(df)
-        # TODO: Select Sensor name
-        df_temp = df_temp[df_temp['id']==watch_id]
-        df_temp.sort_index(ascending = True, inplace = True)
+        df_temp = io.read_g9(blob_df[blob_df['id']==watch_id], sort=False)
+        df_temp = df_temp.drop_duplicates(keep='last')[::2].sort_index()
+        print("READ DATA FRAMES SIZE AFTER CLEANING :",df_temp.shape[0])
+
+
         # Time to do analysis is specified
         start = yesterday + 'T16:00:00.0000Z'
         start_temp = np.datetime64(start)
@@ -277,9 +132,9 @@ def do_recognition():
         end_time = pd.Timestamp(end_temp)
 
         # Initialize 
-        whole_window_size = datetime.timedelta(minutes = 5)
-        window_size = datetime.timedelta(seconds=2)
-        window_slide = datetime.timedelta(seconds=1)
+        whole_window_size = timedelta(minutes = 5)
+        window_size = timedelta(seconds=2)
+        window_slide = timedelta(seconds=1)
         samples_count = []
         a = 0
         df_out = pd.DataFrame()
@@ -294,22 +149,30 @@ def do_recognition():
             print("doing time:",t, ' - ', t_end5min)
             t_start_list.append(time_to_str(t))
             t_end_list.append(time_to_str(t_end5min))
-            while(t+window_slide< t_end5min):
-                t_end = t + window_size
-                snippet_df = df_temp.between_time(t.to_pydatetime().time(), t_end.to_pydatetime().time()
-                                               ,include_start=True, include_end=False)
-                if snippet_df.shape[0]>= 20:
-                    increment +=1
-                    ser = get_all_features(snippet_df, increment)
-                    ser = ser.round(4)
-                    DF = DF.append(ser, verify_integrity=True)
-                t = t_end
-            #DF.dropna(axis=0, how='any', inplace=True)
-            DF = DF.fillna(DF.mean())
+            if df_temp.between_time(t.to_pydatetime().time(), t_end5min.to_pydatetime().time()\
+                                               ,include_start=True, include_end=False).shape[0] >= 10:
+
+
+                while(t+window_slide< t_end5min):
+                    t_end = t + window_size
+                    snippet_df = df_temp.between_time(t.to_pydatetime().time(), t_end.to_pydatetime().time()
+                                                   ,include_start=True, include_end=False)
+                    if snippet_df.shape[0]>= 20:
+                        increment +=1
+                        ser = ff.extract_features(snippet_df, index=increment, feature_list=feature_list ,\
+                                    preserved_features=preserved_features)
+                        DF = DF.append(ser)
+                    t = t_end
+            else:
+                t = t_end5min
+
             if DF.shape[0]<=11:
                 outcome = 7.0
             else:
-                X_test = DF.values
+                df_X = DF.set_index(pd.DatetimeIndex(DF['start'])).drop('start' ,axis =1)
+                del DF 
+                df_X.fillna(df_X.mean().fillna(0), inplace=True)
+                X_test = df_X.values
                 y_pred = logreg.predict(X_test)                
                 u, c = np.unique(y_pred, return_counts=True)
                 outcome = u[np.argmax(c)]
@@ -317,7 +180,6 @@ def do_recognition():
             out_ser = pd.Series(outcome,name=(t-whole_window_size, t) )
             df_out = df_out.append(out_ser)
             plt.plot(list(range(df_out.shape[0])), df_out[0], "*")
-
             ## Send predictions 
         plt.show()   
         dict_list = []
