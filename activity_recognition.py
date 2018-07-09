@@ -100,18 +100,14 @@ def do_recognition():
         for blobname in blob_table['blobname']:
             blob_Class = blob_service.get_blob_to_text(container_name=container_name_, blob_name = blobname)
             blob_String =blob_Class.content
-            blob_df1 = pd.read_csv(StringIO(blob_String),low_memory=False)
-            blob_df = blob_df.append(blob_df1)        
-
+            for chunk in pd.read_csv(StringIO(blob_String), chunksize=10000):
+                blob_df = blob_df.append(chunk)
 
         print("READ DATA FRAMES SIZE :",blob_df.shape[0])
 
-    del blob_df1
-
 
     #################
     #################
-    
     feature_list =  ['aoa','ate','apf','rms','std','minimax','cor','mean','min','max']
     preserved_features=['start']
 
@@ -202,6 +198,7 @@ def do_recognition():
 
         response = requests.request("POST", url, data=payload, headers=headers)
         print(response.text)
+
 
     return True
 
