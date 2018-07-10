@@ -49,7 +49,7 @@ account_key='TJWcjsCs4aK9Xorw4DIAZGvKz0AFb2kvgSh49t+3nADR2usZ1ED14GLBQ/klJsSSrKy
 container_name_ = 'jnj'
 
 # Model saved
-filename = './modelbuilding/finalized_model.sav'
+filename = './activity-recognition/finalized_model.sav'
 logreg = pickle.load(open(filename, 'rb'), encoding = 'iso-8859-1')
 
 def time_to_str(t):
